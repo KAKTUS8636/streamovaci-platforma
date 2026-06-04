@@ -1,0 +1,11 @@
+{
+  "devDependencies": {
+    "concurrently": "^9.2.1"
+  },
+  "scripts": {
+    "dev": "concurrently \"npm run dev --prefix frontend\" \"cd backend && venv\\Scripts\\activate && python app.py\""
+  },
+  "dependencies": {
+    "mongodb": "^7.2.0"
+  }
+}

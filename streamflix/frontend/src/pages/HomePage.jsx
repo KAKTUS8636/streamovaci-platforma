@@ -145,9 +145,11 @@ function HomePage() {
         <div className="pointer-events-none absolute left-[10%] top-8 h-40 w-40 rounded-full bg-red-600/18 blur-3xl"></div>
         <div className="pointer-events-none absolute right-[10%] top-16 h-48 w-48 rounded-full bg-blue-600/14 blur-3xl"></div>
 
-        {/* SEARCH + GENRES NAHORE */}
+        {/* SEARCH + GENRES NAHORE - OPRAVENA SIRKA */}
         <div className="relative mt-2 flex w-full flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
-          <div className="flex w-full items-center rounded-lg border border-white/10 bg-[#070d19]/90 transition-all duration-200 focus-within:border-red-500/60 focus-within:shadow-[0_0_28px_rgba(220,38,38,0.16)] lg:max-w-[760px]">
+          
+          {/* SEARCH - TED STEJNE SIROKY JAKO GENRES (280px) */}
+          <div className="flex w-full items-center rounded-lg border border-white/10 bg-[#070d19]/90 transition-all duration-200 focus-within:border-red-500/60 focus-within:shadow-[0_0_28px_rgba(220,38,38,0.16)] lg:w-[280px]">
             <div className="flex h-full items-center pl-4 pr-3 text-red-400/80">
               <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2">
                 <circle cx="11" cy="11" r="7" />

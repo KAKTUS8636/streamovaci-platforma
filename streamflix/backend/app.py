@@ -228,45 +228,27 @@ def get_me(current_user):
 @token_required
 def tmdb_search(current_user):
     query = request.args.get('query', '')
-    page = request.args.get('page', 1)
-
-    if not query:
-        return jsonify({'error': 'Query is required'}), 400
-
-    if not TMDB_API_KEY:
-        return jsonify({'error': 'TMDB API key not configured'}), 500
+    if not query: return jsonify({'error': 'Query required'}), 400
+    if not TMDB_API_KEY: return jsonify({'error': 'No TMDB Key'}), 500
 
     try:
         res = requests.get(f'{TMDB_BASE_URL}/search/movie', params={
-            'api_key': TMDB_API_KEY,
-            'query': query,
-            'page': page,
-            'language': 'en-US'
+            'api_key': TMDB_API_KEY, 'query': query, 'language': 'en-US'
         })
         data = res.json()
-
         movies = []
         for m in data.get('results', []):
             movies.append({
                 'tmdb_id': m['id'],
-                'title': m.get('title', ''),
-                'year': m.get('release_date', '')[:4] if m.get('release_date') else '',
+                'title': m.get('title', m.get('name', 'Unknown')),
+                'year': m.get('release_date', m.get('first_air_date', ''))[:4],
                 'rating': round(m.get('vote_average', 0), 1),
-                'poster': f"{TMDB_IMG_URL}{m['poster_path']}" if m.get('poster_path') else '',
-                'backdrop': f"https://image.tmdb.org/t/p/original{m['backdrop_path']}" if m.get('backdrop_path') else '',
-                'description': m.get('overview', ''),
-                'popularity': m.get('popularity', 0)
+                'poster': f"{TMDB_IMG_URL}{m['poster_path']}" if m.get('poster_path') else None,
+                'description': m.get('overview', '')
             })
-
-        return jsonify({
-            'results': movies,
-            'total_pages': data.get('total_pages', 1),
-            'total_results': data.get('total_results', 0),
-            'page': data.get('page', 1)
-        }), 200
-
+        return jsonify(movies), 200 # VRACÍME PŘÍMO POLE
     except Exception as e:
-        return jsonify({'error': f'TMDB request failed: {str(e)}'}), 500
+        return jsonify({'error': str(e)}), 500
 
 
 @app.route('/api/tmdb/movie/<int:tmdb_id>', methods=['GET'])

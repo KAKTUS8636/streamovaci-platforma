@@ -28,7 +28,7 @@ db = client.streamflix
 try:
     client.admin.command('ping')
     print("MongoDB connected successfully!")
-    print(f"TMDB API Key: {'Set' if TMDB_API_KEY else 'NOT SET'}")
+    print(f"TMDB API Key: {'SET -> ' + TMDB_API_KEY[:4] + '...' if TMDB_API_KEY else 'NOT SET - THIS IS THE PROBLEM'}")
     print(f"Admin email: {ADMIN_EMAIL}")
 except Exception as e:
     print(f"MongoDB connection failed: {e}")
@@ -39,14 +39,12 @@ except Exception as e:
 # ============================================
 def serialize_movie(movie):
     movie['_id'] = str(movie['_id'])
-
     if isinstance(movie.get('cast'), list):
         movie['cast'] = movie['cast']
     if isinstance(movie.get('writers'), list):
         movie['writers'] = movie['writers']
     if isinstance(movie.get('seasons'), list):
         movie['seasons'] = movie['seasons']
-
     return movie
 
 
@@ -66,13 +64,19 @@ def validate_movie(data):
         return ['Request body is empty']
     if not data.get('title'):
         errors.append('Title is required')
-    
-    # Zjemnime validaci pro importy z Discoveru
     if data.get('type') not in ('movie', 'show', 'series'):
-        # Pokud neni typ zadan, nastavime movie
         data['type'] = 'movie'
-
     return errors
+
+
+def safe_year(date_str):
+    """Safely extract year from date string like '2023-01-15'"""
+    if not date_str:
+        return None
+    date_str = str(date_str).strip()
+    if len(date_str) >= 4:
+        return date_str[:4]
+    return None
 
 
 # ============================================
@@ -162,7 +166,6 @@ def signup():
         return jsonify({'error': 'Username already taken'}), 409
 
     hashed_password = bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt())
-
     role = 'admin' if email == ADMIN_EMAIL else 'user'
 
     user = {
@@ -222,32 +225,129 @@ def get_me(current_user):
 
 
 # ============================================
+# DEBUG ROUTE (remove in production)
+# ============================================
+@app.route('/api/debug', methods=['GET'])
+def debug():
+    return jsonify({
+        'tmdb_key_set': bool(TMDB_API_KEY),
+        'tmdb_key_preview': (TMDB_API_KEY[:4] + '...') if TMDB_API_KEY else None,
+        'mongo_ok': True,
+        'admin_email': ADMIN_EMAIL
+    }), 200
+
+
+# ============================================
 # TMDB ROUTES
 # ============================================
+@app.route('/api/tmdb/trending', methods=['GET'])
+@token_required
+def tmdb_trending(current_user):
+    if not TMDB_API_KEY:
+        print("ERROR: TMDB_API_KEY is not set in .env file!")
+        return jsonify({'error': 'TMDB API key not configured. Add TMDB_API_KEY to your .env file'}), 500
+
+    try:
+        print(f"Fetching trending movies from TMDB...")
+        res = requests.get(
+            f'{TMDB_BASE_URL}/trending/movie/week',
+            params={'api_key': TMDB_API_KEY, 'language': 'en-US'},
+            timeout=10
+        )
+
+        print(f"TMDB trending status code: {res.status_code}")
+
+        if res.status_code == 401:
+            return jsonify({'error': 'Invalid TMDB API key. Check your .env file'}), 500
+        if res.status_code != 200:
+            return jsonify({'error': f'TMDB returned status {res.status_code}'}), 500
+
+        data = res.json()
+        raw_results = data.get('results', [])
+        print(f"TMDB returned {len(raw_results)} trending movies")
+
+        movies = []
+        for m in raw_results:
+            release_date = m.get('release_date') or m.get('first_air_date') or ''
+            movies.append({
+                'tmdb_id': m['id'],
+                'title': m.get('title') or m.get('name') or 'Unknown',
+                'year': safe_year(release_date),
+                'rating': round(m.get('vote_average') or 0, 1),
+                'poster': f"{TMDB_IMG_URL}{m['poster_path']}" if m.get('poster_path') else None,
+                'description': m.get('overview') or '',
+                'type': 'tv' if m.get('media_type') == 'tv' else 'movie'
+            })
+
+        print(f"Returning {len(movies)} trending movies to frontend")
+        return jsonify(movies), 200
+
+    except requests.exceptions.Timeout:
+        print("TMDB request timed out")
+        return jsonify({'error': 'TMDB request timed out'}), 500
+    except requests.exceptions.ConnectionError:
+        print("Cannot connect to TMDB")
+        return jsonify({'error': 'Cannot connect to TMDB'}), 500
+    except Exception as e:
+        import traceback
+        print(f"Trending error: {e}")
+        traceback.print_exc()
+        return jsonify({'error': str(e)}), 500
+
+
 @app.route('/api/tmdb/search', methods=['GET'])
 @token_required
 def tmdb_search(current_user):
-    query = request.args.get('query', '')
-    if not query: return jsonify({'error': 'Query required'}), 400
-    if not TMDB_API_KEY: return jsonify({'error': 'No TMDB Key'}), 500
+    query = request.args.get('query', '').strip()
+    if not query:
+        return jsonify({'error': 'Query required'}), 400
+    if not TMDB_API_KEY:
+        print("ERROR: TMDB_API_KEY is not set in .env file!")
+        return jsonify({'error': 'TMDB API key not configured. Add TMDB_API_KEY to your .env file'}), 500
 
     try:
-        res = requests.get(f'{TMDB_BASE_URL}/search/movie', params={
-            'api_key': TMDB_API_KEY, 'query': query, 'language': 'en-US'
-        })
+        print(f"Searching TMDB for: '{query}'")
+        res = requests.get(
+            f'{TMDB_BASE_URL}/search/movie',
+            params={'api_key': TMDB_API_KEY, 'query': query, 'language': 'en-US'},
+            timeout=10
+        )
+
+        print(f"TMDB search status code: {res.status_code}")
+
+        if res.status_code == 401:
+            return jsonify({'error': 'Invalid TMDB API key. Check your .env file'}), 500
+        if res.status_code != 200:
+            return jsonify({'error': f'TMDB returned status {res.status_code}'}), 500
+
         data = res.json()
+        raw_results = data.get('results', [])
+        print(f"TMDB returned {len(raw_results)} search results")
+
         movies = []
-        for m in data.get('results', []):
+        for m in raw_results:
+            release_date = m.get('release_date') or ''
             movies.append({
                 'tmdb_id': m['id'],
-                'title': m.get('title', m.get('name', 'Unknown')),
-                'year': m.get('release_date', m.get('first_air_date', ''))[:4],
-                'rating': round(m.get('vote_average', 0), 1),
+                'title': m.get('title') or m.get('name') or 'Unknown',
+                'year': safe_year(release_date),
+                'rating': round(m.get('vote_average') or 0, 1),
                 'poster': f"{TMDB_IMG_URL}{m['poster_path']}" if m.get('poster_path') else None,
-                'description': m.get('overview', '')
+                'description': m.get('overview') or '',
+                'type': 'movie'
             })
-        return jsonify(movies), 200 # VRACÍME PŘÍMO POLE
+
+        print(f"Returning {len(movies)} search results to frontend")
+        return jsonify(movies), 200
+
+    except requests.exceptions.Timeout:
+        return jsonify({'error': 'TMDB request timed out'}), 500
+    except requests.exceptions.ConnectionError:
+        return jsonify({'error': 'Cannot connect to TMDB'}), 500
     except Exception as e:
+        import traceback
+        print(f"Search error: {e}")
+        traceback.print_exc()
         return jsonify({'error': str(e)}), 500
 
 
@@ -258,11 +358,11 @@ def tmdb_movie_detail(current_user, tmdb_id):
         return jsonify({'error': 'TMDB API key not configured'}), 500
 
     try:
-        res = requests.get(f'{TMDB_BASE_URL}/movie/{tmdb_id}', params={
-            'api_key': TMDB_API_KEY,
-            'language': 'en-US',
-            'append_to_response': 'videos,credits'
-        })
+        res = requests.get(
+            f'{TMDB_BASE_URL}/movie/{tmdb_id}',
+            params={'api_key': TMDB_API_KEY, 'language': 'en-US', 'append_to_response': 'videos,credits'},
+            timeout=10
+        )
         m = res.json()
 
         genres = [g['name'] for g in m.get('genres', [])]
@@ -287,11 +387,11 @@ def tmdb_movie_detail(current_user, tmdb_id):
                 director = person.get('name', '')
                 break
 
-        movie = {
+        return jsonify({
             'tmdb_id': m['id'],
             'title': m.get('title', ''),
             'type': 'movie',
-            'year': m.get('release_date', '')[:4] if m.get('release_date') else '',
+            'year': safe_year(m.get('release_date', '')),
             'rating': round(m.get('vote_average', 0), 1),
             'poster': f"{TMDB_IMG_URL}{m['poster_path']}" if m.get('poster_path') else '',
             'backdrop': f"https://image.tmdb.org/t/p/original{m['backdrop_path']}" if m.get('backdrop_path') else '',
@@ -305,46 +405,16 @@ def tmdb_movie_detail(current_user, tmdb_id):
             'director': director,
             'popularity': m.get('popularity', 0),
             'vote_count': m.get('vote_count', 0)
-        }
-
-        return jsonify(movie), 200
+        }), 200
 
     except Exception as e:
         return jsonify({'error': f'TMDB request failed: {str(e)}'}), 500
 
-
-@app.route('/api/tmdb/trending', methods=['GET'])
-@token_required
-def tmdb_trending(current_user):
-    if not TMDB_API_KEY:
-        return jsonify({'error': 'TMDB API key not configured'}), 500
-
-    try:
-        res = requests.get(f'{TMDB_BASE_URL}/trending/movie/week', params={
-            'api_key': TMDB_API_KEY,
-            'language': 'en-US'
-        })
-        data = res.json()
-
-        movies = []
-        for m in data.get('results', []):
-            movies.append({
-                'tmdb_id': m['id'],
-                'title': m.get('title', m.get('name', 'Unknown')), # Podpora pro filmy i serialy
-                'year': m.get('release_date', m.get('first_air_date', ''))[:4],
-                'rating': round(m.get('vote_average', 0), 1),
-                'poster': f"{TMDB_IMG_URL}{m['poster_path']}" if m.get('poster_path') else None,
-                'description': m.get('overview', '') # Tohle je dulezite pro frontend!
-            })
-
-        return jsonify(movies), 200 # Vracime primo list
-
-    except Exception as e:
-        return jsonify({'error': f'TMDB request failed: {str(e)}'}), 500
 
 @app.route('/api/tmdb/import/<int:tmdb_id>', methods=['POST'])
 @admin_required
 def import_tmdb_movie(current_user, tmdb_id):
+    # Check if already imported
     existing = db.movies.find_one({'tmdb_id': tmdb_id})
     if existing:
         return jsonify({'message': 'Movie already imported', 'movie': serialize_movie(existing)}), 200
@@ -353,11 +423,11 @@ def import_tmdb_movie(current_user, tmdb_id):
         return jsonify({'error': 'TMDB API key not configured'}), 500
 
     try:
-        res = requests.get(f'{TMDB_BASE_URL}/movie/{tmdb_id}', params={
-            'api_key': TMDB_API_KEY,
-            'language': 'en-US',
-            'append_to_response': 'videos,credits'
-        })
+        res = requests.get(
+            f'{TMDB_BASE_URL}/movie/{tmdb_id}',
+            params={'api_key': TMDB_API_KEY, 'language': 'en-US', 'append_to_response': 'videos,credits'},
+            timeout=10
+        )
         m = res.json()
 
         genres = [g['name'] for g in m.get('genres', [])]
@@ -382,13 +452,15 @@ def import_tmdb_movie(current_user, tmdb_id):
                 director = person.get('name', '')
                 break
 
+        year_str = safe_year(m.get('release_date', ''))
+
         movie = {
             'tmdb_id': tmdb_id,
             'title': m.get('title', ''),
             'type': 'movie',
             'genre': ', '.join(genres),
             'genres': genres,
-            'year': int(m.get('release_date', '0000')[:4]) if m.get('release_date') else None,
+            'year': int(year_str) if year_str else None,
             'rating': round(m.get('vote_average', 0), 1),
             'poster': f"{TMDB_IMG_URL}{m['poster_path']}" if m.get('poster_path') else '',
             'backdrop': f"https://image.tmdb.org/t/p/original{m['backdrop_path']}" if m.get('backdrop_path') else '',
@@ -419,14 +491,54 @@ def import_tmdb_movie(current_user, tmdb_id):
 def get_movies(current_user):
     genre = request.args.get('genre')
     search = request.args.get('search')
+    year_from = request.args.get('year_from')
+    year_to = request.args.get('year_to')
+    min_rating = request.args.get('min_rating')
     sort_by = request.args.get('sort', 'created_at')
     order = request.args.get('order', 'desc')
 
     query = {}
+
+    # Genre filter - supports comma-separated genres (AND logic)
     if genre:
-        query['genre'] = {'$regex': genre, '$options': 'i'}
+        genre_list = [g.strip() for g in genre.split(',') if g.strip()]
+        if genre_list:
+            genre_conditions = []
+            for g in genre_list:
+                genre_conditions.append({'genre': {'$regex': g, '$options': 'i'}})
+            query['$and'] = genre_conditions
+
+    # Search filter
     if search:
-        query['title'] = {'$regex': search, '$options': 'i'}
+        if '$and' not in query:
+            query['$and'] = []
+        query['$and'].append({'title': {'$regex': search, '$options': 'i'}})
+
+    # Year range filter
+    if year_from:
+        try:
+            if '$and' not in query:
+                query['$and'] = []
+            query['$and'].append({'year': {'$gte': int(year_from)}})
+        except ValueError:
+            pass
+
+    if year_to:
+        try:
+            if '$and' not in query:
+                query['$and'] = []
+            query['$and'].append({'year': {'$lte': int(year_to)}})
+        except ValueError:
+            pass
+
+    # Min rating filter
+    if min_rating:
+        try:
+            if '$and' not in query:
+                query['$and'] = []
+            query['$and'].append({'rating': {'$gte': float(min_rating)}})
+        except ValueError:
+            pass
 
     sort_order = -1 if order == 'desc' else 1
     valid_sorts = ['created_at', 'title', 'year', 'rating']
@@ -460,23 +572,23 @@ def add_movie(current_user):
         return jsonify({'errors': errors}), 400
 
     movie = {
-        'title':         data.get('title', '').strip(),
-        'type':          data.get('type', 'movie'),
-        'genre':         data.get('genre', '').strip(),
-        'year':          int(data['year']) if data.get('year') else None,
-        'rating':        float(data['rating']) if data.get('rating') else None,
-        'poster':        data.get('poster', '').strip(),
-        'backdrop':      data.get('backdrop', '').strip(),
-        'description':   data.get('description', '').strip(),
-        'trailer':       data.get('trailer', '').strip(),
-        'director':      data.get('director', '').strip(),
-        'cast':          data.get('cast', []),
-        'runtime':       int(data['runtime']) if data.get('runtime') else None,
-        'release_date':  data.get('release_date', '').strip(),
-        'seasons':       data.get('seasons', []) if data.get('type') == 'show' else [],
+        'title':          data.get('title', '').strip(),
+        'type':           data.get('type', 'movie'),
+        'genre':          data.get('genre', '').strip(),
+        'year':           int(data['year']) if data.get('year') else None,
+        'rating':         float(data['rating']) if data.get('rating') else None,
+        'poster':         data.get('poster', '').strip(),
+        'backdrop':       data.get('backdrop', '').strip(),
+        'description':    data.get('description', '').strip(),
+        'trailer':        data.get('trailer', '').strip(),
+        'director':       data.get('director', '').strip(),
+        'cast':           data.get('cast', []),
+        'runtime':        int(data['runtime']) if data.get('runtime') else None,
+        'release_date':   data.get('release_date', '').strip(),
+        'seasons':        data.get('seasons', []) if data.get('type') == 'show' else [],
         'total_episodes': int(data['total_episodes']) if data.get('total_episodes') and data.get('type') == 'show' else None,
-        'added_by':      str(current_user['_id']),
-        'created_at':    datetime.utcnow().isoformat()
+        'added_by':       str(current_user['_id']),
+        'created_at':     datetime.utcnow().isoformat()
     }
 
     result = db.movies.insert_one(movie)
@@ -493,20 +605,20 @@ def update_movie(current_user, movie_id):
         return jsonify({'errors': errors}), 400
 
     update_data = {
-        'title':         data.get('title', '').strip(),
-        'type':          data.get('type', 'movie'),
-        'genre':         data.get('genre', '').strip(),
-        'year':          int(data['year']) if data.get('year') else None,
-        'rating':        float(data['rating']) if data.get('rating') else None,
-        'poster':        data.get('poster', '').strip(),
-        'backdrop':      data.get('backdrop', '').strip(),
-        'description':   data.get('description', '').strip(),
-        'trailer':       data.get('trailer', '').strip(),
-        'director':      data.get('director', '').strip(),
-        'cast':          data.get('cast', []),
-        'runtime':       int(data['runtime']) if data.get('runtime') else None,
-        'release_date':  data.get('release_date', '').strip(),
-        'seasons':       data.get('seasons', []) if data.get('type') == 'show' else [],
+        'title':          data.get('title', '').strip(),
+        'type':           data.get('type', 'movie'),
+        'genre':          data.get('genre', '').strip(),
+        'year':           int(data['year']) if data.get('year') else None,
+        'rating':         float(data['rating']) if data.get('rating') else None,
+        'poster':         data.get('poster', '').strip(),
+        'backdrop':       data.get('backdrop', '').strip(),
+        'description':    data.get('description', '').strip(),
+        'trailer':        data.get('trailer', '').strip(),
+        'director':       data.get('director', '').strip(),
+        'cast':           data.get('cast', []),
+        'runtime':        int(data['runtime']) if data.get('runtime') else None,
+        'release_date':   data.get('release_date', '').strip(),
+        'seasons':        data.get('seasons', []) if data.get('type') == 'show' else [],
         'total_episodes': int(data['total_episodes']) if data.get('total_episodes') and data.get('type') == 'show' else None,
     }
 
@@ -662,7 +774,8 @@ def add_to_watchlist(current_user, movie_id):
     if existing:
         return jsonify({'message': 'Already in watchlist'}), 200
     db.watchlist.insert_one({
-        'user_id': user_id, 'movie_id': movie_id,
+        'user_id': user_id,
+        'movie_id': movie_id,
         'added_at': datetime.utcnow().isoformat()
     })
     return jsonify({'message': 'Added to watchlist'}), 201
@@ -715,7 +828,8 @@ def toggle_like(current_user, movie_id):
         return jsonify({'message': 'Unliked', 'liked': False}), 200
     else:
         db.likes.insert_one({
-            'user_id': user_id, 'movie_id': movie_id,
+            'user_id': user_id,
+            'movie_id': movie_id,
             'liked_at': datetime.utcnow().isoformat()
         })
         return jsonify({'message': 'Liked', 'liked': True}), 201
@@ -766,8 +880,12 @@ def rate_movie(current_user, movie_id):
 
     db.user_ratings.update_one(
         {'user_id': user_id, 'movie_id': movie_id},
-        {'$set': {'user_id': user_id, 'movie_id': movie_id, 'score': score,
-                  'rated_at': datetime.utcnow().isoformat()}},
+        {'$set': {
+            'user_id': user_id,
+            'movie_id': movie_id,
+            'score': score,
+            'rated_at': datetime.utcnow().isoformat()
+        }},
         upsert=True
     )
     return jsonify({'message': 'Rating saved', 'score': score}), 200
@@ -816,7 +934,8 @@ def add_to_history(current_user, movie_id):
         return jsonify({'error': 'Movie not found'}), 404
 
     db.watch_history.insert_one({
-        'user_id': user_id, 'movie_id': movie_id,
+        'user_id': user_id,
+        'movie_id': movie_id,
         'watched_at': datetime.utcnow().isoformat()
     })
     return jsonify({'message': 'Added to watch history'}), 201
@@ -853,8 +972,10 @@ def get_movie_userdata(current_user, movie_id):
     user_rating = rating_doc['score'] if rating_doc else None
     watch_count = db.watch_history.count_documents({'user_id': user_id, 'movie_id': movie_id})
     return jsonify({
-        'liked': is_liked, 'in_watchlist': in_watchlist,
-        'user_rating': user_rating, 'watch_count': watch_count
+        'liked': is_liked,
+        'in_watchlist': in_watchlist,
+        'user_rating': user_rating,
+        'watch_count': watch_count
     }), 200
 
 
